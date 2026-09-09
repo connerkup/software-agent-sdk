@@ -695,3 +695,56 @@ async def main(wf):
 """
     result = execute_workflow_script(script, ctx)
     assert result == "result:build from result:design API"
+
+
+def test_run_dag_with_agent_task_nodes() -> None:
+    from openhands.tools.workflow.definition import AgentTaskNode
+
+    manager = _FakeTaskManager()
+    ctx = _context(manager)
+
+    nodes = {
+        "spec": AgentTaskNode(
+            prompt="design actuarial core",
+            agent="antigravity",
+        ),
+        "calc": AgentTaskNode(
+            prompt="compute metrics with {spec}",
+            agent="general-purpose",
+            depends_on=["spec"],
+        ),
+    }
+
+    results = asyncio.run(ctx.run_dag(nodes))
+    assert results["spec"] == "result:design actuarial core"
+    assert results["calc"] == "result:compute metrics with result:design actuarial core"
+    assert "antigravity: design actuarial core" in manager.prompts
+    assert (
+        "general-purpose: compute metrics with result:design actuarial core"
+        in manager.prompts
+    )
+
+
+def test_run_dag_script_with_agent_task_node() -> None:
+    manager = _FakeTaskManager()
+    ctx = _context(manager)
+    script = """
+async def main(wf):
+    nodes = {
+        "spec": AgentTaskNode(
+            prompt="generate architecture",
+            agent="antigravity",
+        ),
+        "review": AgentTaskNode(
+            prompt="verify {spec}",
+            agent="code-reviewer",
+            depends_on=["spec"],
+        ),
+    }
+    results = await wf.run_dag(nodes)
+    return results["review"]
+"""
+    result = execute_workflow_script(script, ctx)
+    assert result == "result:verify result:generate architecture"
+    assert "antigravity: generate architecture" in manager.prompts
+    assert "code-reviewer: verify result:generate architecture" in manager.prompts

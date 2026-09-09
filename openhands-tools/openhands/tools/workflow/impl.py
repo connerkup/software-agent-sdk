@@ -6,13 +6,16 @@ import ast
 import asyncio
 import inspect
 import json as jsonlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import ToolExecutor
 from openhands.tools.task.manager import TaskManager
-from openhands.tools.workflow.definition import WorkflowObservation
+from openhands.tools.workflow.definition import (
+    AgentTaskNode,
+    WorkflowObservation,
+)
 
 
 if TYPE_CHECKING:
@@ -67,6 +70,7 @@ class _TaskStarter(Protocol):
         resume: str | None = None,
         description: str | None = None,
         conversation: LocalConversation | None = None,
+        agent: Any = None,
     ) -> _TaskLike: ...
 
     def close(self) -> None: ...
@@ -78,7 +82,7 @@ class WorkflowContext:
     def __init__(
         self,
         parent_conversation: LocalConversation,
-        max_concurrency: int,
+        max_concurrency: int = 4,
         manager: _TaskStarter | None = None,
     ) -> None:
         if max_concurrency < 1:
@@ -119,19 +123,26 @@ class WorkflowContext:
         prompt: str,
         subagent_type: str,
         description: str | None,
+        agent: Any = None,
     ) -> str:
         # Note: `_TaskStarter.start_task` accepts a `resume` parameter, but
         # workflow sub-agents are always fresh tasks; resumption is intentionally
         # not exposed through WorkflowContext in the MVP.
         if self._closed:
             raise WorkflowScriptError("WorkflowContext is already closed")
-        task = await asyncio.to_thread(
-            self._manager.start_task,
-            prompt=prompt,
-            subagent_type=subagent_type,
-            description=description,
-            conversation=self._parent_conversation,
-        )
+        kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "subagent_type": subagent_type,
+            "description": description,
+            "conversation": self._parent_conversation,
+        }
+        if agent is not None:
+            kwargs["agent"] = agent
+        try:
+            task = await asyncio.to_thread(self._manager.start_task, **kwargs)
+        except TypeError:
+            kwargs.pop("agent", None)
+            task = await asyncio.to_thread(self._manager.start_task, **kwargs)
         if task.error:
             raise RuntimeError(task.error)
         return task.result or ""
@@ -243,7 +254,7 @@ class WorkflowContext:
 
     async def run_dag(
         self,
-        nodes: dict[str, dict[str, Any]],
+        nodes: Mapping[str, dict[str, Any] | AgentTaskNode],
         *,
         max_concurrency: int | None = None,
     ) -> dict[str, str]:
@@ -254,14 +265,15 @@ class WorkflowContext:
         are pruned without executing to avoid wasting agent calls.
 
         Args:
-            nodes: Mapping of node ID to specification dict:
+            nodes: Mapping of node ID to specification dict or AgentTaskNode:
                 - ``prompt``: Required prompt string or callable
                   ``(results) -> str``. When a string, occurrences of
                   ``{parent_id}`` are substituted with the parent node's result.
                 - ``depends_on``: Optional sequence of parent node IDs
                   (default: ``[]``).
-                - ``subagent_type``: Optional subagent type
-                  (default: ``"general-purpose"``).
+                - ``agent`` or ``subagent_type``: Subagent type name (e.g.
+                  ``"general-purpose"``, ``"antigravity"``) or an explicit
+                  agent instance / factory (default: ``"general-purpose"``).
                 - ``description``: Optional human-readable description.
             max_concurrency: Optional per-call concurrency limit (capped at
                 context limit).
@@ -279,11 +291,35 @@ class WorkflowContext:
         if max_concurrency is not None and max_concurrency < 1:
             raise ValueError("max_concurrency must be at least 1")
 
+        def _get_deps(s: dict[str, Any] | AgentTaskNode) -> list[str]:
+            return (
+                list(s.depends_on)
+                if isinstance(s, AgentTaskNode)
+                else list(s.get("depends_on", []))
+            )
+
+        def _get_prompt(
+            s: dict[str, Any] | AgentTaskNode,
+        ) -> str | Callable[[dict[str, str]], str]:
+            return s.prompt if isinstance(s, AgentTaskNode) else s.get("prompt", "")
+
+        def _get_agent(s: dict[str, Any] | AgentTaskNode) -> Any:
+            if isinstance(s, AgentTaskNode):
+                return s.agent
+            return s.get("agent") or s.get("subagent_type", "general-purpose")
+
+        def _get_description(s: dict[str, Any] | AgentTaskNode) -> str | None:
+            return (
+                s.description if isinstance(s, AgentTaskNode) else s.get("description")
+            )
+
         # 1. Structural validation
         for node_id, spec in nodes.items():
-            if not isinstance(spec, dict):
-                raise ValueError(f"Node '{node_id}' specification must be a dict")
-            deps = spec.get("depends_on", [])
+            if not isinstance(spec, (dict, AgentTaskNode)):
+                raise ValueError(
+                    f"Node '{node_id}' specification must be a dict or AgentTaskNode"
+                )
+            deps = _get_deps(spec)
             for dep in deps:
                 if dep == node_id:
                     raise ValueError(f"Node '{node_id}' cannot depend on itself")
@@ -293,10 +329,10 @@ class WorkflowContext:
                     )
 
         # 2. Cycle detection via Kahn's topological sort
-        in_degree = {k: len(nodes[k].get("depends_on", [])) for k in nodes}
+        in_degree = {k: len(_get_deps(nodes[k])) for k in nodes}
         adj: dict[str, list[str]] = {k: [] for k in nodes}
         for k, spec in nodes.items():
-            for dep in spec.get("depends_on", []):
+            for dep in _get_deps(spec):
                 adj[dep].append(k)
 
         queue = [k for k, deg in in_degree.items() if deg == 0]
@@ -327,8 +363,8 @@ class WorkflowContext:
         failed_or_skipped: set[str] = set()
         events: dict[str, asyncio.Event] = {k: asyncio.Event() for k in nodes}
 
-        async def run_node(node_id: str, spec: dict[str, Any]) -> None:
-            deps = spec.get("depends_on", [])
+        async def run_node(node_id: str, spec: dict[str, Any] | AgentTaskNode) -> None:
+            deps = _get_deps(spec)
             # Wait for all upstream dependencies
             for dep in deps:
                 await events[dep].wait()
@@ -345,9 +381,9 @@ class WorkflowContext:
                 return
 
             # Render prompt
-            raw_prompt = spec.get("prompt", "")
-            subagent_type = spec.get("subagent_type", "general-purpose")
-            description = spec.get("description")
+            raw_prompt = _get_prompt(spec)
+            agent_spec = _get_agent(spec)
+            description = _get_description(spec)
 
             if callable(raw_prompt):
                 rendered_prompt = str(raw_prompt(results))
@@ -361,11 +397,19 @@ class WorkflowContext:
 
             async with semaphore:
                 try:
-                    res = await self._run_agent_task(
-                        prompt=rendered_prompt,
-                        subagent_type=subagent_type,
-                        description=description,
-                    )
+                    if isinstance(agent_spec, str):
+                        res = await self._run_agent_task(
+                            prompt=rendered_prompt,
+                            subagent_type=agent_spec,
+                            description=description,
+                        )
+                    else:
+                        res = await self._run_agent_task(
+                            prompt=rendered_prompt,
+                            subagent_type="custom",
+                            description=description,
+                            agent=agent_spec,
+                        )
                     results[node_id] = res
                 except Exception as exc:
                     failed_or_skipped.add(node_id)
@@ -600,6 +644,7 @@ def _format_exception(error: Exception) -> str:
 def _safe_globals() -> dict[str, Any]:
     safe_builtins = {
         "abs": abs,
+        "AgentTaskNode": AgentTaskNode,
         "all": all,
         "any": any,
         "bool": bool,

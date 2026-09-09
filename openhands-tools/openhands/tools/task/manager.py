@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.sdk import Agent
+from openhands.sdk import Agent, AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.state import (
@@ -168,6 +168,7 @@ class TaskManager:
         resume: str | None = None,
         description: str | None = None,
         conversation: LocalConversation | None = None,
+        agent: AgentBase | None = None,
     ) -> Task:
         """Start a blocking sub-agent task.
 
@@ -177,6 +178,7 @@ class TaskManager:
             resume: Task ID to resume (continues existing conversation).
             description: Short label for the task.
             conversation: Parent conversation (set on first call).
+            agent: Explicit agent instance to run instead of factory lookup.
 
         Returns:
             TaskState with the final result.
@@ -193,6 +195,7 @@ class TaskManager:
             task = self._create_task(
                 subagent_type=subagent_type,
                 description=description,
+                custom_agent=agent,
             )
 
         return self._run_task(
@@ -244,6 +247,7 @@ class TaskManager:
         self,
         subagent_type: str,
         description: str | None,
+        custom_agent: AgentBase | None = None,
     ) -> Task:
         """Create a fresh task.
 
@@ -251,19 +255,28 @@ class TaskManager:
         1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
         2. The parent conversation's ``max_iteration_per_run``
         """
-        factory = get_agent_factory(subagent_type)
-        worker_agent = self._get_sub_agent_from_factory(factory)
+        if custom_agent is not None:
+            worker_agent = custom_agent
+            effective_max_iter = self.parent_conversation.max_iteration_per_run
+            effective_max_budget = self.parent_conversation.max_budget_per_run
+            hook_config = None
+            confirmation_policy = None
+        else:
+            factory = get_agent_factory(subagent_type)
+            worker_agent = self._get_sub_agent_from_factory(factory)
 
-        effective_max_iter = (
-            factory.definition.max_iteration_per_run
-            if factory.definition.max_iteration_per_run
-            else self.parent_conversation.max_iteration_per_run
-        )
-        # Sub-agent budget: definition value, else inherit the parent's.
-        effective_max_budget = (
-            factory.definition.max_budget_per_run
-            or self.parent_conversation.max_budget_per_run
-        )
+            effective_max_iter = (
+                factory.definition.max_iteration_per_run
+                if factory.definition.max_iteration_per_run
+                else self.parent_conversation.max_iteration_per_run
+            )
+            # Sub-agent budget: definition value, else inherit the parent's.
+            effective_max_budget = (
+                factory.definition.max_budget_per_run
+                or self.parent_conversation.max_budget_per_run
+            )
+            hook_config = factory.definition.hooks
+            confirmation_policy = factory.definition.get_confirmation_policy()
 
         with self._tasks_lock:
             task_id, conversation_id = self._generate_ids()
@@ -276,13 +289,14 @@ class TaskManager:
                 subagent_type=subagent_type,
                 worker_agent=worker_agent,
                 conversation_id=conversation_id,
-                hook_config=factory.definition.hooks,
+                hook_config=hook_config,
             )
 
-            self._set_confirmation_policy(
-                sub_conversation,
-                factory.definition.get_confirmation_policy(),
-            )
+            if confirmation_policy is not None:
+                self._set_confirmation_policy(
+                    sub_conversation,
+                    confirmation_policy,
+                )
 
             self._tasks[task_id] = Task(
                 id=task_id,
@@ -299,7 +313,7 @@ class TaskManager:
         task_id: str,
         subagent_type: str,
         conversation_id: uuid.UUID,
-        worker_agent: Agent,
+        worker_agent: AgentBase,
         hook_config: HookConfig | None = None,
         max_budget_per_run: float | None = None,
     ) -> LocalConversation:

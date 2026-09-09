@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Final, Literal
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import Field
 
@@ -14,6 +15,27 @@ from openhands.sdk.tool import (
     ToolDefinition,
     register_tool,
 )
+
+
+@dataclass
+class AgentTaskNode:
+    """Specification for a task node in a directed acyclic graph (DAG).
+
+    Attributes:
+        prompt: Task prompt string or callable ``(results: dict[str, str]) -> str``.
+            When a string, occurrences of ``{parent_id}`` are substituted with
+            the parent node's result.
+        agent: Subagent type name (e.g. ``"general-purpose"``, ``"antigravity"``)
+            or an explicit ``AgentBase`` instance.
+        depends_on: Sequence of upstream task node IDs that must complete before
+            this task executes.
+        description: Optional human-readable description for tracing and logs.
+    """
+
+    prompt: str | Callable[[dict[str, str]], str]
+    agent: str | Any = "general-purpose"
+    depends_on: Sequence[str] = field(default_factory=tuple)
+    description: str | None = None
 
 
 if TYPE_CHECKING:

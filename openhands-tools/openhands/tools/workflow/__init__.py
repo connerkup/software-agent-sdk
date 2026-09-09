@@ -1,6 +1,7 @@
 """Dynamic workflow tool for sub-agent orchestration."""
 
 from openhands.tools.workflow.definition import (
+    AgentTaskNode,
     WorkflowAction,
     WorkflowObservation,
     WorkflowTool,
@@ -14,6 +15,7 @@ from openhands.tools.workflow.impl import (
 
 
 __all__ = [
+    "AgentTaskNode",
     "WorkflowAction",
     "WorkflowContext",
     "WorkflowExecutor",
