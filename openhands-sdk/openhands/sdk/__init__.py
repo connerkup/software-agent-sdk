@@ -5,6 +5,7 @@ from importlib.metadata import PackageNotFoundError, version
 from openhands.sdk.agent import (
     Agent,
     AgentBase,
+    AntigravityAgent,
 )
 from openhands.sdk.banner import _print_banner
 from openhands.sdk.context import AgentContext, load_memory
@@ -138,6 +139,7 @@ __all__ = [
     "ToolDefinition",
     "AgentBase",
     "Agent",
+    "AntigravityAgent",
     "Action",
     "Observation",
     "MCPClient",
