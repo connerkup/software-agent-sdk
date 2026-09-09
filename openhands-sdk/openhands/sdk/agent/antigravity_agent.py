@@ -34,6 +34,24 @@ def _default_antigravity_llm() -> LLM:
     return LLM(model="litellm_proxy/gemini/gemini-2.5-pro", api_key="placeholder")
 
 
+VALID_AGY_MODELS = {
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
+    "gemini-3.7-flash-high",
+    "gemini-3.7-flash-medium",
+    "gemini-3.7-flash-low",
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
+}
+
+
 class AntigravityAgent(AgentBase):
     """Native OpenHands agent backed by Google Antigravity."""
 
@@ -150,13 +168,15 @@ class AntigravityAgent(AgentBase):
         ):
             try:
                 cmd = [agy_bin, "-p", prompt, "--output-format", "text"]
+                if cwd and os.path.isdir(cwd):
+                    cmd.extend(["--add-dir", cwd])
                 if self.session_mode == "plan":
-                    cmd.extend(["--mode", "plan"])
+                    cmd.extend(["--mode", "plan", "--dangerously-skip-permissions"])
                 else:
                     cmd.extend(
                         ["--mode", "accept-edits", "--dangerously-skip-permissions"]
                     )
-                if self.model_name:
+                if self.model_name in VALID_AGY_MODELS:
                     cmd.extend(["--model", self.model_name])
 
                 proc = await asyncio.create_subprocess_exec(
@@ -168,9 +188,10 @@ class AntigravityAgent(AgentBase):
                 stdout, _ = await proc.communicate()
                 out_text = stdout.decode("utf-8", errors="replace").strip()
                 if out_text:
+                    formatted = f"[Antigravity Agent :: {self.model_name}]\n{out_text}"
                     if on_token:
-                        cast(Any, on_token)(out_text)
-                    return out_text
+                        cast(Any, on_token)(formatted)
+                    return formatted
             except Exception as exc:
                 logger.warning("Antigravity subprocess execution failed: %s", exc)
 
