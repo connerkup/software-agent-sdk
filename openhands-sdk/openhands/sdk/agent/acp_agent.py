@@ -39,7 +39,7 @@ from collections.abc import (
 )
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Self
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
@@ -69,6 +69,7 @@ from pydantic import (
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from openhands.sdk.agent.acp_file_credentials import (
@@ -1804,18 +1805,34 @@ class ACPAgent(AgentBase):
         secret = validate_secret(value, info)
         return secret.get_secret_value() if secret is not None else None
 
-    acp_file_secrets: list[ACPFileSecretSpec] = Field(
-        default_factory=lambda: list(default_acp_file_secrets()),
+    acp_file_secrets: list[ACPFileSecretSpec] | None = Field(
+        default=None,
         description=(
             "Reserved 'file-content' credential secrets to materialise to disk "
             "before launching the subprocess (e.g. Codex auth.json, Gemini "
             "Vertex SA JSON). The SDK owns the mechanism (write the file in the "
             "runtime pod, set the env var, seed-if-absent); these specs are the "
-            "policy. Defaults to the built-in supported providers; a downstream "
+            "policy. When None, scoped to the active provider's file secrets "
+            "(or the union across all providers when unrecognized); a downstream "
             "application may override or extend this to support other ACP "
             "servers with different file-auth schemes."
         ),
     )
+
+    @model_validator(mode="after")
+    def _resolve_default_file_secrets(self) -> Self:
+        if self.acp_file_secrets is None:
+            provider = self._resolved_provider()
+            if provider is not None:
+                object.__setattr__(
+                    self, "acp_file_secrets", list(provider.file_secrets)
+                )
+            else:
+                object.__setattr__(
+                    self, "acp_file_secrets", list(default_acp_file_secrets())
+                )
+        return self
+
     acp_isolate_data_dir: bool = Field(
         default=False,
         description=(
@@ -1959,7 +1976,7 @@ class ACPAgent(AgentBase):
             self._file_credential_bindings[secret_name] = binding
 
     def restart_for_updated_credentials(self, secret_names: Collection[str]) -> None:
-        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        configured = {spec.secret_name for spec in (self.acp_file_secrets or ())}
         with self._file_credential_lock:
             self._replace_file_credentials_on_next_materialisation.update(
                 configured.intersection(secret_names)
@@ -2454,7 +2471,7 @@ class ACPAgent(AgentBase):
         (their values are file blobs, not env vars the subprocess can reference
         by name).
         """
-        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        configured = {spec.secret_name for spec in (self.acp_file_secrets or ())}
         if not configured:
             return set()
         return set(state.secret_registry.secret_sources) & configured
@@ -2617,7 +2634,7 @@ class ACPAgent(AgentBase):
     def _materialise_file_secrets(
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
-        for spec in self.acp_file_secrets:
+        for spec in self.acp_file_secrets or ():
             name = spec.secret_name
             with self._file_credential_lock:
                 replace_existing = (
@@ -3097,7 +3114,7 @@ class ACPAgent(AgentBase):
                         or detect_acp_provider_by_agent_name(agent_name)
                     )
                     configured = _preconfigured_credentials(
-                        auth_provider, self.acp_file_secrets, env
+                        auth_provider, self.acp_file_secrets or [], env
                     )
                     if configured:
                         logger.info(

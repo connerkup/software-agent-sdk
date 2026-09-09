@@ -503,213 +503,258 @@ _PI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # extension); the SDK detects which mechanism each session advertises.
 
 
-ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
-    {
-        "claude-code": ACPProviderInfo(
-            key="claude-code",
-            display_name="Claude Code",
-            default_command=ACP_INSTALL_CATALOG["claude-code"].npx_command(),
-            api_key_env_var="ANTHROPIC_API_KEY",
-            base_url_env_var="ANTHROPIC_BASE_URL",
-            default_session_mode="bypassPermissions",
-            agent_name_patterns=("claude-agent",),
-            # claude-agent-acp ignores the session-_meta model selection (the
-            # requested model only becomes a picker option; the session keeps
-            # running its default), so the init path must push the model via a
-            # protocol call (#3654). On 0.44.0+ that call is
-            # ``set_config_option(configId="model")`` rather than
-            # ``set_session_model`` (auto-detected from session/new); the _meta
-            # payload (session_meta_key below) is still sent — harmless, and
-            # picks up the same model if a future CLI honours it.
-            supports_set_session_model=True,
-            supports_runtime_model_switch=True,
-            session_meta_key="claudeCode",
-            available_models=_CLAUDE_MODELS,
-            # The CLI's own default (model configOptions ``currentValue``).
-            default_model="opus[1m]",
-            binary_name=ACP_INSTALL_CATALOG["claude-code"].binary_name,
-            data_dir_env_var="CLAUDE_CONFIG_DIR",
-            # Keyed on the credential itself, NOT on CLAUDE_CONFIG_DIR: the
-            # config dir is a *location* lever (data-dir isolation, #1019)
-            # orthogonal to which credential is active. Keying the strip on it
-            # wrongly fired during API-key isolation and missed the conflict
-            # when the token arrived via env without isolation (#3588).
-            env_conflicts=(
-                ACPEnvConflictSpec(
-                    dominant="CLAUDE_CODE_OAUTH_TOKEN",
-                    strip=("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"),
-                ),
+_ACP_PROVIDERS_REGISTRY: dict[str, ACPProviderInfo] = {
+    "claude-code": ACPProviderInfo(
+        key="claude-code",
+        display_name="Claude Code",
+        default_command=ACP_INSTALL_CATALOG["claude-code"].npx_command(),
+        api_key_env_var="ANTHROPIC_API_KEY",
+        base_url_env_var="ANTHROPIC_BASE_URL",
+        default_session_mode="bypassPermissions",
+        agent_name_patterns=("claude-agent",),
+        # claude-agent-acp ignores the session-_meta model selection (the
+        # requested model only becomes a picker option; the session keeps
+        # running its default), so the init path must push the model via a
+        # protocol call (#3654). On 0.44.0+ that call is
+        # ``set_config_option(configId="model")`` rather than
+        # ``set_session_model`` (auto-detected from session/new); the _meta
+        # payload (session_meta_key below) is still sent — harmless, and
+        # picks up the same model if a future CLI honours it.
+        supports_set_session_model=True,
+        supports_runtime_model_switch=True,
+        session_meta_key="claudeCode",
+        available_models=_CLAUDE_MODELS,
+        # The CLI's own default (model configOptions ``currentValue``).
+        default_model="opus[1m]",
+        binary_name=ACP_INSTALL_CATALOG["claude-code"].binary_name,
+        data_dir_env_var="CLAUDE_CONFIG_DIR",
+        # Keyed on the credential itself, NOT on CLAUDE_CONFIG_DIR: the
+        # config dir is a *location* lever (data-dir isolation, #1019)
+        # orthogonal to which credential is active. Keying the strip on it
+        # wrongly fired during API-key isolation and missed the conflict
+        # when the token arrived via env without isolation (#3588).
+        env_conflicts=(
+            ACPEnvConflictSpec(
+                dominant="CLAUDE_CODE_OAUTH_TOKEN",
+                strip=("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"),
             ),
         ),
-        "codex": ACPProviderInfo(
-            key="codex",
-            display_name="Codex",
-            default_command=ACP_INSTALL_CATALOG["codex"].npx_command(),
-            api_key_env_var="OPENAI_API_KEY",
-            base_url_env_var="OPENAI_BASE_URL",
-            default_session_mode="agent-full-access",
-            agent_name_patterns=("codex-acp",),
-            supports_set_session_model=True,
-            supports_runtime_model_switch=True,
-            session_meta_key=None,
-            available_models=_CODEX_MODELS,
-            default_model="gpt-5.5",
-            file_secrets=_CODEX_FILE_SECRETS,
-            binary_name=ACP_INSTALL_CATALOG["codex"].binary_name,
-            data_dir_env_var="CODEX_HOME",
+    ),
+    "codex": ACPProviderInfo(
+        key="codex",
+        display_name="Codex",
+        default_command=ACP_INSTALL_CATALOG["codex"].npx_command(),
+        api_key_env_var="OPENAI_API_KEY",
+        base_url_env_var="OPENAI_BASE_URL",
+        default_session_mode="agent-full-access",
+        agent_name_patterns=("codex-acp",),
+        supports_set_session_model=True,
+        supports_runtime_model_switch=True,
+        session_meta_key=None,
+        available_models=_CODEX_MODELS,
+        default_model="gpt-5.5",
+        file_secrets=_CODEX_FILE_SECRETS,
+        binary_name=ACP_INSTALL_CATALOG["codex"].binary_name,
+        data_dir_env_var="CODEX_HOME",
+    ),
+    "gemini-cli": ACPProviderInfo(
+        key="gemini-cli",
+        display_name="Gemini CLI",
+        default_command=ACP_INSTALL_CATALOG["gemini-cli"].npx_command(),
+        api_key_env_var="GEMINI_API_KEY",
+        base_url_env_var="GEMINI_BASE_URL",
+        # gemini-cli 0.46.0 rejects ``set_session_mode("yolo")`` at session
+        # init (-32603), which crashes headless startup; ``default`` is
+        # accepted. The ACP bridge auto-approves every request_permission, so
+        # prompts never block regardless of mode. See #3772.
+        default_session_mode="default",
+        agent_name_patterns=("gemini-cli",),
+        supports_set_session_model=True,
+        supports_runtime_model_switch=True,
+        session_meta_key=None,
+        available_models=_GEMINI_MODELS,
+        # Match the Gemini CLI's own auto-router rather than a manually
+        # pinned snapshot. Pinning e.g. ``gemini-2.5-pro`` here would make
+        # downstream clients persist a value that bypasses the CLI's
+        # auto-routing. ``auto`` is the router id the CLI reports in its
+        # 0.46.0 ``availableModels``.
+        default_model="auto",
+        file_secrets=_GEMINI_FILE_SECRETS,
+        binary_name=ACP_INSTALL_CATALOG["gemini-cli"].binary_name,
+        # Gemini CLI has no dedicated config-dir var; it hard-codes
+        # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
+        data_dir_env_var="HOME",
+    ),
+    "kimi-code": ACPProviderInfo(
+        key="kimi-code",
+        display_name="Kimi Code",
+        default_command=ACP_INSTALL_CATALOG["kimi-code"].npx_command(),
+        # No env-var API key: ``KIMI_API_KEY`` is read only from inside
+        # config.toml, so exporting it authenticates nothing (verified on
+        # 0.38.0, with and without a config file present). The credential
+        # is the file itself — see _KIMI_FILE_SECRETS. Kimi's env-only
+        # route is ``KIMI_MODEL_NAME`` + ``KIMI_MODEL_API_KEY``, which
+        # needs a second variable this field cannot express. See #4819.
+        api_key_env_var=None,
+        # Not an auth claim: a plain endpoint override the CLI honours as
+        # a fallback when config.toml declares no base_url.
+        base_url_env_var="KIMI_BASE_URL",
+        # Verified against Kimi Code CLI 0.38.0: ``session/set_mode``
+        # accepts ``auto``/``yolo``/``default``/``plan``. ``yolo``
+        # auto-approves tool calls while still allowing question
+        # elicitation; ``auto`` would suppress questions entirely.
+        default_session_mode="yolo",
+        # ``kimi acp`` reports ``agentInfo.name = "Kimi Code CLI"``.
+        agent_name_patterns=("kimi",),
+        supports_set_session_model=True,
+        supports_runtime_model_switch=True,
+        session_meta_key=None,
+        # Deliberately uncurated. Unlike the other three, Kimi's model
+        # ids are a property of the credential, not the plan tier: an
+        # account login offers ``kimi-code/*`` aliases, while a
+        # config.toml provider offers whatever alias the user named
+        # (verified on 0.38.0 — the ``model`` select returned the
+        # user-chosen key). A static list would therefore be wrong, not
+        # merely incomplete, for anyone not on an account login. Clients
+        # render the picker from the live session's model select instead;
+        # ``default_model=None`` leaves the CLI to pick its own default,
+        # which it resolves against whatever provider is configured.
+        available_models=(),
+        default_model=None,
+        file_secrets=_KIMI_FILE_SECRETS,
+        binary_name=ACP_INSTALL_CATALOG["kimi-code"].binary_name,
+        # ``KIMI_CODE_HOME`` relocates the ``~/.kimi-code`` data root.
+        data_dir_env_var="KIMI_CODE_HOME",
+    ),
+    "pi": ACPProviderInfo(
+        key="pi",
+        display_name="Pi",
+        # Two packages, so the catalog emits the ``--package=`` form with
+        # ``pi-acp`` as the positional npx runs — which is also the only
+        # token ``_prefer_pinned_binary`` and
+        # ``detect_acp_provider_by_command`` can match on.
+        default_command=ACP_INSTALL_CATALOG["pi"].npx_command(),
+        api_key_env_var="ANTHROPIC_API_KEY",
+        # pi resolves each provider's base URL from its own catalogue;
+        # ANTHROPIC_BASE_URL reaches only the vendored Anthropic SDK, which
+        # pi overrides. Redirecting it needs models.json or an extension.
+        base_url_env_var=None,
+        default_session_mode=None,
+        agent_name_patterns=("pi-acp",),
+        supports_set_session_model=True,
+        supports_runtime_model_switch=True,
+        session_meta_key=None,
+        available_models=_PI_MODELS,
+        # pi preselects a model from whichever catalogue the configured
+        # credential unlocks, so there is no id that is right for every
+        # account — leave the choice to the server.
+        default_model=None,
+        file_secrets=_PI_FILE_SECRETS,
+        binary_name=ACP_INSTALL_CATALOG["pi"].binary_name,
+        data_dir_env_var="HOME",
+    ),
+    "opencode": ACPProviderInfo(
+        key="opencode",
+        display_name="OpenCode",
+        default_command=ACP_INSTALL_CATALOG["opencode"].npx_command(),
+        # OpenCode Zen, the CLI's own gateway and the provider its model
+        # ids are namespaced under. Third-party keys (ANTHROPIC_API_KEY,
+        # OPENAI_API_KEY, ...) also enable their providers inside OpenCode,
+        # but none of them is OpenCode's own credential.
+        api_key_env_var="OPENCODE_API_KEY",
+        # Zen's endpoint comes from the model catalogue, not the
+        # environment: verified against a local sink that neither
+        # OPENCODE_BASE_URL nor OPENAI_BASE_URL diverts it. A per-provider
+        # ``options.baseURL`` in the config file is the only override.
+        base_url_env_var=None,
+        # OpenCode exposes exactly two modes, ``build`` and ``plan``.
+        # ``build`` is the tool-executing default and raised no permission
+        # requests for read/write/bash under the stock permission config.
+        default_session_mode="build",
+        # ``opencode acp`` reports ``agentInfo.name = "OpenCode"``; the
+        # pattern also prefixes the package basename ``opencode-ai`` and the
+        # binary ``opencode`` for command-time detection.
+        agent_name_patterns=("opencode",),
+        supports_set_session_model=True,
+        supports_runtime_model_switch=True,
+        # ``session/new`` ignores a ``_meta`` model selection (tried under
+        # three plausible keys); the configOptions select is the only path
+        # that takes effect.
+        session_meta_key=None,
+        available_models=_OPENCODE_MODELS,
+        # The CLI's own default (model configOptions ``currentValue``),
+        # both with and without a key.
+        default_model="opencode/big-pickle",
+        # No ``file_secrets``: OpenCode reads its whole auth store from
+        # OPENCODE_AUTH_CONTENT when set, ahead of the on-disk auth.json, so
+        # the credential rides the ordinary env-var channel.
+        binary_name=ACP_INSTALL_CATALOG["opencode"].binary_name,
+        # OPENCODE_CONFIG_DIR exists but points at a config *file* only;
+        # auth, sessions, the SQLite store and caches follow
+        # XDG_{DATA,CONFIG,CACHE,STATE}_HOME, which all fall back to HOME.
+        # Relocating HOME is the only single lever that moves all of them.
+        data_dir_env_var="HOME",
+    ),
+    "antigravity": ACPProviderInfo(
+        key="antigravity",
+        display_name="Google Antigravity",
+        default_command=("agy", "--session-mode", "headless"),
+        api_key_env_var="GEMINI_API_KEY",
+        base_url_env_var="GEMINI_BASE_URL",
+        default_session_mode="yolo",
+        agent_name_patterns=("antigravity", "agy"),
+        supports_set_session_model=True,
+        supports_runtime_model_switch=True,
+        session_meta_key=None,
+        available_models=(
+            ACPModelOption(id="gemini-2.5-pro", label="Gemini 2.5 Pro"),
+            ACPModelOption(id="gemini-2.5-flash", label="Gemini 2.5 Flash"),
         ),
-        "gemini-cli": ACPProviderInfo(
-            key="gemini-cli",
-            display_name="Gemini CLI",
-            default_command=ACP_INSTALL_CATALOG["gemini-cli"].npx_command(),
-            api_key_env_var="GEMINI_API_KEY",
-            base_url_env_var="GEMINI_BASE_URL",
-            # gemini-cli 0.46.0 rejects ``set_session_mode("yolo")`` at session
-            # init (-32603), which crashes headless startup; ``default`` is
-            # accepted. The ACP bridge auto-approves every request_permission, so
-            # prompts never block regardless of mode. See #3772.
-            default_session_mode="default",
-            agent_name_patterns=("gemini-cli",),
-            supports_set_session_model=True,
-            supports_runtime_model_switch=True,
-            session_meta_key=None,
-            available_models=_GEMINI_MODELS,
-            # Match the Gemini CLI's own auto-router rather than a manually
-            # pinned snapshot. Pinning e.g. ``gemini-2.5-pro`` here would make
-            # downstream clients persist a value that bypasses the CLI's
-            # auto-routing. ``auto`` is the router id the CLI reports in its
-            # 0.46.0 ``availableModels``.
-            default_model="auto",
-            file_secrets=_GEMINI_FILE_SECRETS,
-            binary_name=ACP_INSTALL_CATALOG["gemini-cli"].binary_name,
-            # Gemini CLI has no dedicated config-dir var; it hard-codes
-            # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
-            data_dir_env_var="HOME",
-        ),
-        "kimi-code": ACPProviderInfo(
-            key="kimi-code",
-            display_name="Kimi Code",
-            default_command=ACP_INSTALL_CATALOG["kimi-code"].npx_command(),
-            # No env-var API key: ``KIMI_API_KEY`` is read only from inside
-            # config.toml, so exporting it authenticates nothing (verified on
-            # 0.38.0, with and without a config file present). The credential
-            # is the file itself — see _KIMI_FILE_SECRETS. Kimi's env-only
-            # route is ``KIMI_MODEL_NAME`` + ``KIMI_MODEL_API_KEY``, which
-            # needs a second variable this field cannot express. See #4819.
-            api_key_env_var=None,
-            # Not an auth claim: a plain endpoint override the CLI honours as
-            # a fallback when config.toml declares no base_url.
-            base_url_env_var="KIMI_BASE_URL",
-            # Verified against Kimi Code CLI 0.38.0: ``session/set_mode``
-            # accepts ``auto``/``yolo``/``default``/``plan``. ``yolo``
-            # auto-approves tool calls while still allowing question
-            # elicitation; ``auto`` would suppress questions entirely.
-            default_session_mode="yolo",
-            # ``kimi acp`` reports ``agentInfo.name = "Kimi Code CLI"``.
-            agent_name_patterns=("kimi",),
-            supports_set_session_model=True,
-            supports_runtime_model_switch=True,
-            session_meta_key=None,
-            # Deliberately uncurated. Unlike the other three, Kimi's model
-            # ids are a property of the credential, not the plan tier: an
-            # account login offers ``kimi-code/*`` aliases, while a
-            # config.toml provider offers whatever alias the user named
-            # (verified on 0.38.0 — the ``model`` select returned the
-            # user-chosen key). A static list would therefore be wrong, not
-            # merely incomplete, for anyone not on an account login. Clients
-            # render the picker from the live session's model select instead;
-            # ``default_model=None`` leaves the CLI to pick its own default,
-            # which it resolves against whatever provider is configured.
-            available_models=(),
-            default_model=None,
-            file_secrets=_KIMI_FILE_SECRETS,
-            binary_name=ACP_INSTALL_CATALOG["kimi-code"].binary_name,
-            # ``KIMI_CODE_HOME`` relocates the ``~/.kimi-code`` data root.
-            data_dir_env_var="KIMI_CODE_HOME",
-        ),
-        "pi": ACPProviderInfo(
-            key="pi",
-            display_name="Pi",
-            # Two packages, so the catalog emits the ``--package=`` form with
-            # ``pi-acp`` as the positional npx runs — which is also the only
-            # token ``_prefer_pinned_binary`` and
-            # ``detect_acp_provider_by_command`` can match on.
-            default_command=ACP_INSTALL_CATALOG["pi"].npx_command(),
-            api_key_env_var="ANTHROPIC_API_KEY",
-            # pi resolves each provider's base URL from its own catalogue;
-            # ANTHROPIC_BASE_URL reaches only the vendored Anthropic SDK, which
-            # pi overrides. Redirecting it needs models.json or an extension.
-            base_url_env_var=None,
-            default_session_mode=None,
-            agent_name_patterns=("pi-acp",),
-            supports_set_session_model=True,
-            supports_runtime_model_switch=True,
-            session_meta_key=None,
-            available_models=_PI_MODELS,
-            # pi preselects a model from whichever catalogue the configured
-            # credential unlocks, so there is no id that is right for every
-            # account — leave the choice to the server.
-            default_model=None,
-            file_secrets=_PI_FILE_SECRETS,
-            binary_name=ACP_INSTALL_CATALOG["pi"].binary_name,
-            data_dir_env_var="HOME",
-        ),
-        "opencode": ACPProviderInfo(
-            key="opencode",
-            display_name="OpenCode",
-            default_command=ACP_INSTALL_CATALOG["opencode"].npx_command(),
-            # OpenCode Zen, the CLI's own gateway and the provider its model
-            # ids are namespaced under. Third-party keys (ANTHROPIC_API_KEY,
-            # OPENAI_API_KEY, ...) also enable their providers inside OpenCode,
-            # but none of them is OpenCode's own credential.
-            api_key_env_var="OPENCODE_API_KEY",
-            # Zen's endpoint comes from the model catalogue, not the
-            # environment: verified against a local sink that neither
-            # OPENCODE_BASE_URL nor OPENAI_BASE_URL diverts it. A per-provider
-            # ``options.baseURL`` in the config file is the only override.
-            base_url_env_var=None,
-            # OpenCode exposes exactly two modes, ``build`` and ``plan``.
-            # ``build`` is the tool-executing default and raised no permission
-            # requests for read/write/bash under the stock permission config.
-            default_session_mode="build",
-            # ``opencode acp`` reports ``agentInfo.name = "OpenCode"``; the
-            # pattern also prefixes the package basename ``opencode-ai`` and the
-            # binary ``opencode`` for command-time detection.
-            agent_name_patterns=("opencode",),
-            supports_set_session_model=True,
-            supports_runtime_model_switch=True,
-            # ``session/new`` ignores a ``_meta`` model selection (tried under
-            # three plausible keys); the configOptions select is the only path
-            # that takes effect.
-            session_meta_key=None,
-            available_models=_OPENCODE_MODELS,
-            # The CLI's own default (model configOptions ``currentValue``),
-            # both with and without a key.
-            default_model="opencode/big-pickle",
-            # No ``file_secrets``: OpenCode reads its whole auth store from
-            # OPENCODE_AUTH_CONTENT when set, ahead of the on-disk auth.json, so
-            # the credential rides the ordinary env-var channel.
-            binary_name=ACP_INSTALL_CATALOG["opencode"].binary_name,
-            # OPENCODE_CONFIG_DIR exists but points at a config *file* only;
-            # auth, sessions, the SQLite store and caches follow
-            # XDG_{DATA,CONFIG,CACHE,STATE}_HOME, which all fall back to HOME.
-            # Relocating HOME is the only single lever that moves all of them.
-            data_dir_env_var="HOME",
-        ),
-    }
-)
+        default_model="gemini-2.5-pro",
+        file_secrets=(),
+        binary_name="agy",
+        data_dir_env_var="HOME",
+    ),
+}
+
+ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(_ACP_PROVIDERS_REGISTRY)
 """Read-only registry of built-in ACP providers keyed by ``acp_server`` value."""
 
 
-def default_acp_file_secrets() -> tuple[ACPFileSecretSpec, ...]:
-    """Built-in file-content credential specs across all supported providers.
+def register_acp_provider(info: ACPProviderInfo) -> None:
+    """Register or override an ACP provider in the runtime registry.
 
-    The union of every :attr:`ACPProviderInfo.file_secrets` (Codex ``auth.json``,
-    Gemini Vertex SA). Used as the default for
+    Enables external or community agent harnesses (e.g. Antigravity, custom
+    coding agents) to plug into OpenHands ACP without modifying SDK source.
+    """
+    _ACP_PROVIDERS_REGISTRY[info.key] = info
+
+
+def unregister_acp_provider(key: str) -> None:
+    """Remove an ACP provider from the runtime registry."""
+    _ACP_PROVIDERS_REGISTRY.pop(key, None)
+
+
+def default_acp_file_secrets(
+    provider: str | ACPProviderInfo | None = None,
+) -> tuple[ACPFileSecretSpec, ...]:
+    """Built-in file-content credential specs across supported providers.
+
+    When ``provider`` is given (by key or :class:`ACPProviderInfo`), returns
+    only that provider's ``file_secrets``. When ``None``, returns the union
+    across all supported providers. Used as the default for
     :attr:`~openhands.sdk.agent.ACPAgent.acp_file_secrets`, which a downstream
     application may override or extend to support other ACP servers without an
     SDK change.
     """
+    if provider is not None:
+        info = (
+            provider
+            if isinstance(provider, ACPProviderInfo)
+            else get_acp_provider(provider)
+        )
+        if info is not None:
+            return info.file_secrets
     return tuple(spec for info in ACP_PROVIDERS.values() for spec in info.file_secrets)
 
 

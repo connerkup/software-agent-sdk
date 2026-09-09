@@ -9475,7 +9475,7 @@ class TestACPFileSecretMaterialisation:
         assert env.get("CODEX_AUTH_JSON") == "blob"
 
     def test_settings_pass_file_secrets_through_create_agent(self):
-        """ACPAgentSettings defaults to the built-in specs and forwards them to
+        """ACPAgentSettings defaults to the provider-scoped specs and forwards them to
         the constructed ACPAgent."""
         from openhands.sdk.settings.acp_providers import default_acp_file_secrets
         from openhands.sdk.settings.model import ACPAgentSettings
@@ -9485,8 +9485,149 @@ class TestACPFileSecretMaterialisation:
         names = {s.secret_name for s in agent.acp_file_secrets}
         assert "CODEX_AUTH_JSON" in names
         assert {s.secret_name for s in agent.acp_file_secrets} == {
+            s.secret_name for s in default_acp_file_secrets("codex")
+        }
+
+
+class TestACPSecretScopingAndIsolation:
+    """Tests for Issue #4923: ACP provider file secrets scoping & isolation."""
+
+    def test_claude_code_conversation_materialises_zero_other_provider_secrets(
+        self, tmp_path
+    ):
+        """A conversation running claude-code does not materialise codex, gemini,
+        kimi, or pi file secrets, and leaves them as plain env vars."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.agent.acp_agent import ACPAgent
+        from openhands.sdk.secret import StaticSecret
+
+        agent = ACPAgent(acp_command=["claude-agent-acp"], acp_server="claude-code")
+        assert agent.acp_file_secrets == []
+
+        state = TestACPFileSecretMaterialisation._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "CODEX_AUTH_JSON": StaticSecret(
+                    value=SecretStr('{"tokens":{"refresh_token":"r"}}')
+                ),
+                "GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(
+                    value=SecretStr("{}")
+                ),
+                "KIMI_CODE_CONFIG_TOML": StaticSecret(
+                    value=SecretStr('[provider]\nname="x"\n')
+                ),
+                "PI_AUTH_JSON": StaticSecret(value=SecretStr('{"token":"t"}')),
+            }
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = TestACPFileSecretMaterialisation._run_start(
+                agent,
+                state,
+                conn=TestACPFileSecretMaterialisation._make_conn(
+                    agent_name="claude-agent"
+                ),
+            )
+
+        # Blobs reach the subprocess as plain environment variables
+        assert env.get("CODEX_AUTH_JSON") == '{"tokens":{"refresh_token":"r"}}'
+        assert env.get("GOOGLE_APPLICATION_CREDENTIALS_JSON") == "{}"
+        assert env.get("KIMI_CODE_CONFIG_TOML") == '[provider]\nname="x"\n'
+        assert env.get("PI_AUTH_JSON") == '{"token":"t"}'
+
+        # No provider data-dir env vars are set
+        assert "CODEX_HOME" not in env
+        assert "GOOGLE_APPLICATION_CREDENTIALS" not in env
+        assert "KIMI_CODE_HOME" not in env
+        assert "PI_CODING_AGENT_DIR" not in env
+
+        # No credential files are written under <persistence_dir>/acp/
+        acp_dir = Path(state.persistence_dir) / "acp"
+        if acp_dir.is_dir():
+            written_files = [p for p in acp_dir.rglob("*") if p.is_file()]
+            assert written_files == []
+
+    def test_custom_server_resolves_provider_from_command(self):
+        agent = ACPAgent(acp_server="custom", acp_command=["claude-agent-acp"])
+        assert agent.acp_file_secrets == []
+
+        agent_codex = ACPAgent(acp_server="custom", acp_command=["codex-acp"])
+        assert {s.secret_name for s in agent_codex.acp_file_secrets} == {
+            "CODEX_AUTH_JSON"
+        }
+
+    def test_custom_server_unrecognized_command_falls_back_to_union(self):
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+
+        agent = ACPAgent(acp_server="custom", acp_command=["unknown-runner"])
+        assert {s.secret_name for s in agent.acp_file_secrets} == {
             s.secret_name for s in default_acp_file_secrets()
         }
+
+    def test_explicit_acp_file_secrets_honored_verbatim(self):
+        from openhands.sdk.settings.acp_providers import ACPFileSecretSpec
+
+        custom_spec = ACPFileSecretSpec(
+            secret_name="CUSTOM_KEY",
+            filename="custom.json",
+            env_var="CUSTOM_HOME",
+            subdir="custom",
+        )
+        agent = ACPAgent(
+            acp_command=["claude-agent-acp"],
+            acp_server="claude-code",
+            acp_file_secrets=[custom_spec],
+        )
+        assert agent.acp_file_secrets == [custom_spec]
+
+    def test_serialization_roundtrip_preserves_scoped_file_secrets(self):
+        agent = ACPAgent(acp_command=["claude-agent-acp"], acp_server="claude-code")
+        dump = agent.model_dump()
+        restored = ACPAgent.model_validate(dump)
+        assert restored.acp_file_secrets == []
+
+        agent_codex = ACPAgent(acp_command=["codex-acp"], acp_server="codex")
+        dump_codex = agent_codex.model_dump()
+        restored_codex = ACPAgent.model_validate(dump_codex)
+        assert {s.secret_name for s in restored_codex.acp_file_secrets} == {
+            "CODEX_AUTH_JSON"
+        }
+
+    def test_dynamic_register_acp_provider(self):
+        from openhands.sdk.settings.acp_providers import (
+            ACPProviderInfo,
+            get_acp_provider,
+            register_acp_provider,
+            unregister_acp_provider,
+        )
+
+        dummy = ACPProviderInfo(
+            key="test-agent-dummy",
+            display_name="Test Agent Dummy",
+            default_command=("dummy-cli",),
+            api_key_env_var="DUMMY_KEY",
+            base_url_env_var=None,
+            default_session_mode=None,
+            agent_name_patterns=("dummy",),
+            supports_set_session_model=False,
+            supports_runtime_model_switch=False,
+            session_meta_key=None,
+            available_models=(),
+            default_model=None,
+            file_secrets=(),
+            binary_name=None,
+            data_dir_env_var=None,
+        )
+        try:
+            register_acp_provider(dummy)
+            assert get_acp_provider("test-agent-dummy") == dummy
+            agent = ACPAgent(
+                acp_command=["dummy-cli"],
+                acp_server="test-agent-dummy",
+            )
+            assert agent.acp_file_secrets == []
+        finally:
+            unregister_acp_provider("test-agent-dummy")
 
 
 # ---------------------------------------------------------------------------
@@ -10280,4 +10421,3 @@ class TestACPProcessGroupShutdown:
             ["pgrep", "-g", str(pgid)], capture_output=True, text=True
         )
         assert ps_after.stdout.strip() == ""
-

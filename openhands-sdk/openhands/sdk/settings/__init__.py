@@ -11,6 +11,8 @@ from .acp_providers import (
     default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
     get_acp_provider,
+    register_acp_provider,
+    unregister_acp_provider,
 )
 from .api_models import (
     SecretCreateRequest,
@@ -125,6 +127,8 @@ __all__ = [
     "export_settings_schema",
     "field_meta",
     "get_acp_provider",
+    "register_acp_provider",
+    "unregister_acp_provider",
     "validate_agent_settings",
 ]
 

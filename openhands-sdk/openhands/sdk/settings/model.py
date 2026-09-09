@@ -30,6 +30,7 @@ from pydantic import (
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from pydantic.fields import FieldInfo
 
@@ -63,6 +64,7 @@ from .acp_providers import (
     ACPFileSecretSpec,
     ACPProviderInfo,
     default_acp_file_secrets,
+    detect_acp_provider_by_command,
     get_acp_provider,
 )
 from .metadata import (
@@ -1654,17 +1656,47 @@ class ACPAgentSettings(AgentSettingsBase):
     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
     # settings-form UI (no SETTINGS_METADATA_KEY): it's a list of structured
     # specs a downstream application supplies in code to support other ACP CLIs,
-    # not an end-user field. The built-in providers work via the default.
-    acp_file_secrets: list[ACPFileSecretSpec] = Field(
-        default_factory=lambda: list(default_acp_file_secrets()),
+    # not an end-user field. When None, defaults to the active provider's file secrets.
+    acp_file_secrets: list[ACPFileSecretSpec] | None = Field(
+        default=None,
         description=(
             "Reserved 'file-content' credential secrets the SDK materialises to "
             "disk before launching the ACP subprocess (e.g. Codex auth.json, "
-            "Gemini Vertex SA JSON). Defaults to the built-in supported "
-            "providers; override to support other ACP servers with different "
+            "Gemini Vertex SA JSON). When None, defaults to the active "
+            "provider's file secrets (or the union for unrecognized custom "
+            "commands); override to support other ACP servers with different "
             "file-auth schemes."
         ),
     )
+
+    @model_validator(mode="after")
+    def _resolve_default_file_secrets(self) -> Self:
+        if self.acp_file_secrets is None:
+            provider = self.provider_info
+            if provider is not None:
+                object.__setattr__(
+                    self, "acp_file_secrets", list(provider.file_secrets)
+                )
+            elif self.acp_server == "custom":
+                resolved = (
+                    detect_acp_provider_by_command(self.acp_command)
+                    if self.acp_command
+                    else None
+                )
+                if resolved is not None:
+                    object.__setattr__(
+                        self, "acp_file_secrets", list(resolved.file_secrets)
+                    )
+                else:
+                    object.__setattr__(
+                        self, "acp_file_secrets", list(default_acp_file_secrets())
+                    )
+            else:
+                object.__setattr__(
+                    self, "acp_file_secrets", list(default_acp_file_secrets())
+                )
+        return self
+
     llm: LLM = Field(
         default_factory=_default_llm_settings,
         description=(
@@ -1856,7 +1888,11 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_prompt_timeout=self.acp_prompt_timeout,
             acp_startup_timeout=self.acp_startup_timeout,
             acp_isolate_data_dir=self.acp_isolate_data_dir,
-            acp_file_secrets=list(self.acp_file_secrets),
+            acp_file_secrets=(
+                list(self.acp_file_secrets)
+                if self.acp_file_secrets is not None
+                else None
+            ),
             agent_context=self.agent_context,
             mcp_config=self.mcp_config,
         )
