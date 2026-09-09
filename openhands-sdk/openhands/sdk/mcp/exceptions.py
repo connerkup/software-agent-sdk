@@ -38,4 +38,3 @@ class MCPConnectionError(MCPError):
         self.url = url
         self.config = config
         super().__init__(message)
-

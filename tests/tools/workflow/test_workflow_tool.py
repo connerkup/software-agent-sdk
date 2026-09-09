@@ -570,8 +570,7 @@ def test_run_dag_diamond_concurrency() -> None:
     assert results["branch_a"] == "result:do A after result:init"
     assert results["branch_b"] == "result:do B after result:init"
     assert results["join"] == (
-        "result:merge result:do A after result:init and "
-        "result:do B after result:init"
+        "result:merge result:do A after result:init and result:do B after result:init"
     )
     # Root must execute first, join must execute last
     assert manager.prompts[0] == "general-purpose: init"
@@ -673,8 +672,7 @@ def test_run_dag_prunes_downstream_on_failure() -> None:
     error_messages = [str(e) for e in exc_info.value.exceptions]
     assert any("upstream task failed" in msg for msg in error_messages)
     assert any(
-        "skipped because dependency 'failing' failed" in msg
-        for msg in error_messages
+        "skipped because dependency 'failing' failed" in msg for msg in error_messages
     )
     # child_of_failing was never dispatched to manager
     dispatched_prompts = set(manager.prompts)
@@ -697,4 +695,3 @@ async def main(wf):
 """
     result = execute_workflow_script(script, ctx)
     assert result == "result:build from result:design API"
-

@@ -322,9 +322,7 @@ class _ToolListChangedHandler(MessageHandler):
             )
 
 
-def _format_server_target(
-    spec: MCPServer | None, server_config: Any = None
-) -> str:
+def _format_server_target(spec: MCPServer | None, server_config: Any = None) -> str:
     if spec is not None:
         if spec.url:
             return str(spec.url)
@@ -369,11 +367,7 @@ def _format_multi_connection_failure_message(
         f"  - {name} ({target}): {error}" for name, target, error in failures
     )
     guidance = _format_connection_troubleshooting_guidance()
-    return (
-        f"Failed to connect to MCP server(s):\n"
-        f"{servers_desc}\n\n"
-        f"{guidance}\n"
-    )
+    return f"Failed to connect to MCP server(s):\n{servers_desc}\n\n{guidance}\n"
 
 
 class DegradableMCPConfigTransport(MCPConfigTransport):
@@ -501,9 +495,7 @@ class DegradableMCPConfigTransport(MCPConfigTransport):
                     for n, _, _ in failed_servers
                 ):
                     multi_msg = _format_multi_connection_failure_message(failed_servers)
-                    raise MCPConnectionError(
-                        multi_msg, config=self.config.model_dump()
-                    )
+                    raise MCPConnectionError(multi_msg, config=self.config.model_dump())
 
             async with FastMCPTransport(mcp=composite).connect_session(
                 **session_kwargs

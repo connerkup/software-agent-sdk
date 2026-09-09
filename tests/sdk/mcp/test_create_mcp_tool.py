@@ -875,4 +875,3 @@ def test_default_tool_provider_supports_strict():
     provider = DefaultMCPToolProvider()
     with pytest.raises(MCPConnectionError):
         provider.create_tools(native_mcp_config(config), timeout=2.0, strict=True)
-
